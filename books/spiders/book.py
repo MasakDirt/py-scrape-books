@@ -1,11 +1,6 @@
-from typing import Union
-
 import scrapy
-from scrapy import Selector, Spider
+from scrapy import Request
 from scrapy.http import Response
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from twisted.internet.defer import Deferred
 
 
 class BookSpider(scrapy.Spider):
@@ -13,48 +8,45 @@ class BookSpider(scrapy.Spider):
     allowed_domains = ["books.toscrape.com"]
     start_urls = ["https://books.toscrape.com/"]
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.driver = webdriver.Chrome()
-
-    def close(self: Spider, reason: str) -> Union[Deferred, None]:
-        self.driver.quit()
-
     def parse(self, response: Response, **kwargs):
         for book in response.css(".product_pod"):
-            yield {
-                "title": book.css("a::attr(title)").get(),
-                "price": float(book.css(".price_color::text").get()[1:]),
-                "rating": book.css(
-                    "p.star-rating::attr(class)"
-                ).get().split()[-1],
-                **self._get_detailed_info(response, book)
-            }
+            detail_url = response.urljoin(book.css("a::attr(href)").get())
+            yield Request(
+                url=detail_url,
+                callback=self._parse_detailed_info,
+                meta={
+                    "title": book.css("a::attr(title)").get(),
+                    "price": float(book.css(".price_color::text").get()[1:]),
+                    "rating": book.css(
+                        "p.star-rating::attr(class)"
+                    ).get().split()[-1]
+                }
+            )
 
         next_page = response.css(".next > a::attr(href)").get()
-
         if next_page:
             yield response.follow(next_page, callback=self.parse)
 
-    def _get_detailed_info(self, response: Response, book: Selector) -> dict:
-        detail_url = response.urljoin(book.css("a::attr(href)").get())
-        driver = self.driver
-        driver.get(detail_url)
+    def _parse_detailed_info(self, response: Response) -> dict:
+        title = response.meta["title"]
+        price = response.meta["price"]
+        rating = response.meta["rating"]
 
-        return {
-            "amount_in_stock": int(
-                driver.find_element(
-                    By.CLASS_NAME, "instock"
-                ).text.split()[2][1:]
-            ),
-            "category": driver.find_element(
-                By.XPATH, "//tr[th[text()='Product Type']]/td"
-            ).text,
-            "description": driver.find_element(
-                By.CSS_SELECTOR, "article.product_page > p"
-            ).text,
-            "upc": driver.find_element(
-                By.XPATH, "//tr[th[text()='UPC']]/td"
-            ).text
+        amount_in_stock = int(
+            response.css(".instock.availability::text").re_first(r'\d+')
+        )
+        category = response.xpath(
+            "//tr[th[text()='Product Type']]/td/text()"
+        ).get()
+        description = response.css("article.product_page > p::text").get()
+        upc = response.xpath("//tr[th[text()='UPC']]/td/text()").get()
+
+        yield {
+            "title": title,
+            "price": price,
+            "rating": rating,
+            "amount_in_stock": amount_in_stock,
+            "category": category,
+            "description": description,
+            "upc": upc,
         }
